@@ -1,4 +1,14 @@
 -----------------------------------------------------------------------------
+-----------------------------------------------------------------------------
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 -- |
 -- Module      :  Swarm.Language.Syntax
 -- Copyright   :  Brent Yorgey
@@ -7,50 +17,47 @@
 -- SPDX-License-Identifier: BSD-3-Clause
 --
 -- Abstract syntax for terms of the Swarm programming language.
---
------------------------------------------------------------------------------
+module Swarm.Language.Syntax (
+  -- * Directions
+  Direction (..),
+  applyTurn,
+  toDirection,
+  fromDirection,
+  north,
+  south,
+  east,
+  west,
 
-{-# LANGUAGE DeriveAnyClass       #-}
-{-# LANGUAGE DeriveDataTypeable   #-}
-{-# LANGUAGE DeriveGeneric        #-}
-{-# LANGUAGE LambdaCase           #-}
-{-# LANGUAGE PatternSynonyms      #-}
-{-# LANGUAGE RankNTypes           #-}
-{-# LANGUAGE StandaloneDeriving   #-}
-{-# LANGUAGE UndecidableInstances #-}
+  -- * Constants
+  Const (..),
+  CmpConst (..),
+  ArithConst (..),
+  arity,
+  isCmd,
 
-module Swarm.Language.Syntax
-  ( -- * Directions
+  -- * Terms
+  Var,
+  Term (..),
 
-    Direction(..), applyTurn, toDirection, fromDirection, north, south, east, west
+  -- * Term traversal
+  fvT,
+  fv,
+  mapFree1,
+) where
 
-    -- * Constants
-  , Const(..), CmpConst(..), ArithConst(..)
+import Control.Lens (Plated (..), Traversal', (%~))
+import Data.Data.Lens (uniplate)
+import Data.Int (Int64)
+import qualified Data.Set as S
+import Data.Text
+import Linear
 
-  , arity, isCmd
+import Data.Aeson.Types
+import Data.Data (Data)
+import Data.Hashable (Hashable)
+import GHC.Generics (Generic)
 
-    -- * Terms
-  , Var, Term(..)
-
-    -- * Term traversal
-
-  , fvT, fv, mapFree1
-
-  ) where
-
-import           Control.Lens         (Plated (..), Traversal', (%~))
-import           Data.Data.Lens       (uniplate)
-import           Data.Int             (Int64)
-import qualified Data.Set             as S
-import           Data.Text
-import           Linear
-
-import           Data.Aeson.Types
-import           Data.Data            (Data)
-import           Data.Hashable        (Hashable)
-import           GHC.Generics         (Generic)
-
-import           Swarm.Language.Types
+import Swarm.Language.Types
 
 ------------------------------------------------------------
 -- Constants
@@ -71,27 +78,27 @@ instance FromJSONKey Direction where
 --   turning relative to the given vector or by turning to an absolute
 --   direction vector.
 applyTurn :: Direction -> V2 Int64 -> V2 Int64
-applyTurn Lft (V2 x y)  = V2 (-y) x
-applyTurn Rgt (V2 x y)  = V2 y (-x)
-applyTurn Back (V2 x y) = V2 (-x) (-y)
-applyTurn Fwd v         = v
-applyTurn North _       = north
-applyTurn South _       = south
-applyTurn East _        = east
-applyTurn West _        = west
-applyTurn Down _        = V2 0 0
+applyTurn Lft (V2 x y) = V2 (- y) x
+applyTurn Rgt (V2 x y) = V2 y (- x)
+applyTurn Back (V2 x y) = V2 (- x) (- y)
+applyTurn Fwd v = v
+applyTurn North _ = north
+applyTurn South _ = south
+applyTurn East _ = east
+applyTurn West _ = west
+applyTurn Down _ = V2 0 0
 
 -- | Possibly convert a vector into a 'Direction'---that is, if the
 --   vector happens to be a unit vector in one of the cardinal
 --   directions.
 toDirection :: V2 Int64 -> Maybe Direction
-toDirection v    = case v of
-  V2 0 1    -> Just North
+toDirection v = case v of
+  V2 0 1 -> Just North
   V2 0 (-1) -> Just South
-  V2 1 0    -> Just East
+  V2 1 0 -> Just East
   V2 (-1) 0 -> Just West
-  V2 0 0    -> Just Down
-  _         -> Nothing
+  V2 0 0 -> Just Down
+  _ -> Nothing
 
 -- | Convert a 'Direction' into a corresponding vector.  Note that
 --   this only does something reasonable for 'North', 'South', 'East',
@@ -100,9 +107,9 @@ fromDirection :: Direction -> V2 Int64
 fromDirection d = case d of
   North -> north
   South -> south
-  East  -> east
-  West  -> west
-  _     -> V2 0 0
+  East -> east
+  West -> west
+  _ -> V2 0 0
 
 -- | The cardinal direction north = @V2 0 1@.
 north :: V2 Int64
@@ -114,63 +121,96 @@ south = V2 0 (-1)
 
 -- | The cardinal direction east = @V2 1 0@.
 east :: V2 Int64
-east  = V2 1 0
+east = V2 1 0
 
 -- | The cardinal direction west = @V2 (-1) 0@.
 west :: V2 Int64
-west  = V2 (-1) 0
+west = V2 (-1) 0
 
 -- | Constants, representing various built-in functions and commands.
 data Const
+  = -- Trivial actions
 
-  -- Trivial actions
-  = Wait              -- ^ Wait for one time step without doing anything.
-  | Noop              -- ^ Do nothing.  This is different than 'Wait'
-                      --   in that it does not take up a time step.
-  | Selfdestruct      -- ^ Self-destruct.
+    -- | Wait for one time step without doing anything.
+    Wait
+  | -- | Do nothing.  This is different than 'Wait'
+    --   in that it does not take up a time step.
+    Noop
+  | -- | Self-destruct.
+    Selfdestruct
+  | -- Basic actions
 
-  -- Basic actions
-  | Move              -- ^ Move forward one step.
-  | Turn              -- ^ Turn in some direction.
-  | Grab              -- ^ Grab an item from the current location.
-  | Place             -- ^ Try to place an item at the current location.
-  | Give              -- ^ Give an item to another robot at the current location.
-  | Install           -- ^ Install a device on a robot.
-  | Make              -- ^ Make an item.
-  | Build             -- ^ Construct a new robot.
-  | Say               -- ^ Emit a message.
-  | View              -- ^ View a certain robot.
-  | Appear            -- ^ Set what characters are used for display.
-  | Create            -- ^ Create an entity out of thin air. Only
-                      --   available in creative mode.
+    -- | Move forward one step.
+    Move
+  | -- | Turn in some direction.
+    Turn
+  | -- | Grab an item from the current location.
+    Grab
+  | -- | Try to place an item at the current location.
+    Place
+  | -- | Give an item to another robot at the current location.
+    Give
+  | -- | Install a device on a robot.
+    Install
+  | -- | Make an item.
+    Make
+  | -- | Construct a new robot.
+    Build
+  | -- | Emit a message.
+    Say
+  | -- | View a certain robot.
+    View
+  | -- | Set what characters are used for display.
+    Appear
+  | -- | Create an entity out of thin air. Only
+    --   available in creative mode.
+    Create
+  | -- Sensing / generation
 
-  -- Sensing / generation
-  | GetX              -- ^ Get the current x-coordinate.
-  | GetY              -- ^ Get the current y-coordinate.
-  | Blocked           -- ^ See if we can move forward or not.
-  | Scan              -- ^ Scan a nearby cell
-  | Upload            -- ^ Upload knowledge to another robot
-  | Ishere            -- ^ See if a specific entity is here. (This may be removed.)
-  | Random            -- ^ Get a uniformly random integer.
+    -- | Get the current x-coordinate.
+    GetX
+  | -- | Get the current y-coordinate.
+    GetY
+  | -- | See if we can move forward or not.
+    Blocked
+  | -- | Scan a nearby cell
+    Scan
+  | -- | Upload knowledge to another robot
+    Upload
+  | -- | See if a specific entity is here. (This may be removed.)
+    Ishere
+  | -- | Get a uniformly random integer.
+    Random
+  | -- Modules
 
-  -- Modules
-  | Run               -- ^ Run a program loaded from a file.
+    -- | Run a program loaded from a file.
+    Run
+  | -- Arithmetic
 
-  -- Arithmetic
-  | Not               -- ^ Logical negation.
-  | Cmp CmpConst      -- ^ Binary comparison operators.
-  | Neg               -- ^ Arithmetic negation.
-  | Arith ArithConst  -- ^ Binary arithmetic operators.
+    -- | Logical negation.
+    Not
+  | -- | Binary comparison operators.
+    Cmp CmpConst
+  | -- | Arithmetic negation.
+    Neg
+  | -- | Binary arithmetic operators.
+    Arith ArithConst
+  | -- Language built-ins
 
-  -- Language built-ins
-  | If                -- ^ If-expressions.
-  | Fst               -- ^ First projection.
-  | Snd               -- ^ Second projection.
-  | Force             -- ^ Force a delayed evaluation.
-  | Return            -- ^ Return for the cmd monad.
-  | Try               -- ^ Try/catch block
-  | Raise             -- ^ Raise an exception
-
+    -- | If-expressions.
+    If
+  | -- | First projection.
+    Fst
+  | -- | Second projection.
+    Snd
+  | -- | Force a delayed evaluation.
+    Force
+  | -- | Return for the cmd monad.
+    Return
+  | -- | Try/catch block
+    Try
+  | -- | Raise an exception
+    Raise
   deriving (Eq, Ord, Show, Data)
 
 -- | Comparison operator constants.
@@ -186,44 +226,45 @@ data ArithConst = Add | Sub | Mul | Div | Exp
 --   'Swarm.Game.Value.VCApp') until it has enough, then dispatch the constant's
 --   behavior.
 arity :: Const -> Int
-arity Wait         = 0
-arity Noop         = 0
+arity Wait = 0
+arity Noop = 0
 arity Selfdestruct = 0
-arity Move         = 0
-arity Turn         = 1
-arity Grab         = 0
-arity Place        = 1
-arity Give         = 2
-arity Install      = 2
-arity Make         = 1
-arity Build        = 2
-arity Say          = 1
-arity View         = 1
-arity Appear       = 1
-arity Create       = 1
-arity GetX         = 0
-arity GetY         = 0
-arity Blocked      = 0
-arity Scan         = 1
-arity Upload       = 1
-arity Ishere       = 1
-arity Random       = 1
-arity Run          = 1
-arity Not          = 1
-arity (Cmp _)      = 2
-arity Neg          = 1
-arity (Arith _)    = 2
-arity If           = 3
-arity Fst          = 1
-arity Snd          = 1
-arity Force        = 1
-arity Return       = 1
-arity Try          = 2
-arity Raise        = 1
-  -- It would be more compact to represent the above by testing
-  -- whether the constants are in certain sets, but this way the
-  -- compiler warns us about incomplete pattern match if we add more
-  -- constants.
+arity Move = 0
+arity Turn = 1
+arity Grab = 0
+arity Place = 1
+arity Give = 2
+arity Install = 2
+arity Make = 1
+arity Build = 2
+arity Say = 1
+arity View = 1
+arity Appear = 1
+arity Create = 1
+arity GetX = 0
+arity GetY = 0
+arity Blocked = 0
+arity Scan = 1
+arity Upload = 1
+arity Ishere = 1
+arity Random = 1
+arity Run = 1
+arity Not = 1
+arity (Cmp _) = 2
+arity Neg = 1
+arity (Arith _) = 2
+arity If = 3
+arity Fst = 1
+arity Snd = 1
+arity Force = 1
+arity Return = 1
+arity Try = 2
+arity Raise = 1
+
+-- It would be more compact to represent the above by testing
+-- whether the constants are in certain sets, but this way the
+-- compiler warns us about incomplete pattern match if we add more
+-- constants.
 
 -- | Some constants are commands, which means a fully saturated
 --   application of those constants counts as a value, and should not
@@ -232,74 +273,58 @@ arity Raise        = 1
 --   functions; fully saturated applications of such constants should
 --   be evaluated immediately.
 isCmd :: Const -> Bool
-isCmd (Cmp _)   = False
+isCmd (Cmp _) = False
 isCmd (Arith _) = False
 isCmd c = c `notElem` funList
-  where
-    funList = [If, Force, Not, Neg, Fst, Snd]
+ where
+  funList = [If, Force, Not, Neg, Fst, Snd]
 
 ------------------------------------------------------------
 -- Terms
 
 -- | Terms of the Swarm language.
-
 data Term
-    -- | The unit value.
-  = TUnit
-
-    -- | A constant.
-  | TConst Const
-
-    -- | A direction literal.
-  | TDir Direction
-
-    -- | An integer literal.
-  | TInt Integer
-
-    -- | An antiquoted Haskell variable name of type Integer.
-  | TAntiInt Text
-
-    -- | A string literal.
-  | TString Text
-
-    -- | An antiquoted Haskell variable name of type Text.
-  | TAntiString Text
-
-    -- | A Boolean literal.
-  | TBool Bool
-
-    -- | A variable.
-  | TVar Var
-
-    -- | A pair.
-  | TPair Term Term
-
-    -- | A lambda expression, with or without a type annotation on the
+  = -- | The unit value.
+    TUnit
+  | -- | A constant.
+    TConst Const
+  | -- | A direction literal.
+    TDir Direction
+  | -- | An integer literal.
+    TInt Integer
+  | -- | An antiquoted Haskell variable name of type Integer.
+    TAntiInt Text
+  | -- | A string literal.
+    TString Text
+  | -- | An antiquoted Haskell variable name of type Text.
+    TAntiString Text
+  | -- | A Boolean literal.
+    TBool Bool
+  | -- | A variable.
+    TVar Var
+  | -- | A pair.
+    TPair Term Term
+  | -- | A lambda expression, with or without a type annotation on the
     --   binder.
-  | TLam Var (Maybe Type) Term
-
-    -- | Function application.
-  | TApp Term Term
-
-    -- | A (recursive) let expression, with or without a type
+    TLam Var (Maybe Type) Term
+  | -- | Function application.
+    TApp Term Term
+  | -- | A (recursive) let expression, with or without a type
     --   annotation on the variable.
-  | TLet Var (Maybe Polytype) Term Term
-
-    -- | A (recursive) definition command, which binds a variable to a
+    TLet Var (Maybe Polytype) Term Term
+  | -- | A (recursive) definition command, which binds a variable to a
     --   value in subsequent commands.
-  | TDef Var (Maybe Polytype) Term
-
-    -- | A monadic bind for commands, of the form @c1 ; c2@ or @x <- c1; c2@.
-  | TBind (Maybe Var) Term Term
-
-    -- | Delay evaluation of a term.  Swarm is an eager language, but
+    TDef Var (Maybe Polytype) Term
+  | -- | A monadic bind for commands, of the form @c1 ; c2@ or @x <- c1; c2@.
+    TBind (Maybe Var) Term Term
+  | -- | Delay evaluation of a term.  Swarm is an eager language, but
     --   in some cases (e.g. for @if@ statements and recursive
     --   bindings) we need to delay evaluation.  The counterpart to
     --   @delay@ is @force@, where @force (delay t) = t@.  Note that
     --   'Force' is just a constant, whereas 'TDelay' has to be a
     --   special syntactic form so its argument can get special
     --   treatment during evaluation.
-  | TDelay Term
+    TDelay Term
   deriving (Eq, Show, Data)
 
 instance Plated Term where
@@ -309,35 +334,35 @@ instance Plated Term where
 --   variables.
 fvT :: Traversal' Term Term
 fvT f = go S.empty
-  where
-    go bound t = case t of
-      TUnit -> pure t
-      TConst{} -> pure t
-      TDir{} -> pure t
-      TInt{} -> pure t
-      TAntiInt{} -> pure t
-      TString{} -> pure t
-      TAntiString{} -> pure t
-      TBool{} -> pure t
-      TVar x
-        | x `S.member` bound -> pure t
-        | otherwise          -> f (TVar x)
-      TLam x ty t1 -> TLam x ty <$> go (S.insert x bound) t1
-      TApp t1 t2  -> TApp <$> go bound t1 <*> go bound t2
-      TLet x ty t1 t2 ->
-        let bound' = S.insert x bound
-        in  TLet x ty <$> go bound' t1 <*> go bound' t2
-      TPair t1 t2 -> TPair <$> go bound t1 <*> go bound t2
-      TDef x ty t1 -> TDef x ty <$> go (S.insert x bound) t1
-      TBind mx t1 t2 ->
-        TBind mx <$> go bound t1 <*> go (maybe id S.insert mx bound) t2
-      TDelay t1 -> TDelay <$> go bound t1
+ where
+  go bound t = case t of
+    TUnit -> pure t
+    TConst {} -> pure t
+    TDir {} -> pure t
+    TInt {} -> pure t
+    TAntiInt {} -> pure t
+    TString {} -> pure t
+    TAntiString {} -> pure t
+    TBool {} -> pure t
+    TVar x
+      | x `S.member` bound -> pure t
+      | otherwise -> f (TVar x)
+    TLam x ty t1 -> TLam x ty <$> go (S.insert x bound) t1
+    TApp t1 t2 -> TApp <$> go bound t1 <*> go bound t2
+    TLet x ty t1 t2 ->
+      let bound' = S.insert x bound
+       in TLet x ty <$> go bound' t1 <*> go bound' t2
+    TPair t1 t2 -> TPair <$> go bound t1 <*> go bound t2
+    TDef x ty t1 -> TDef x ty <$> go (S.insert x bound) t1
+    TBind mx t1 t2 ->
+      TBind mx <$> go bound t1 <*> go (maybe id S.insert mx bound) t2
+    TDelay t1 -> TDelay <$> go bound t1
 
 -- | Traversal over the free variables of a term.  Note that if you
 --   want to get the set of all free variables, you can do so via
 --   @'Data.Set.Lens.setOf' 'fv'@.
 fv :: Traversal' Term Var
-fv = fvT . (\f -> \case { TVar x -> TVar <$> f x ; t -> pure t })
+fv = fvT . (\f -> \case TVar x -> TVar <$> f x; t -> pure t)
 
 -- | Apply a function to all free occurrences of a particular variable.
 mapFree1 :: Var -> (Term -> Term) -> Term -> Term
